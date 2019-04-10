@@ -75,7 +75,7 @@ function exitWithMessage() {
 }
 
 getAllUsers() {
-    usersInLdap=$(smbldap-userlist -u | awk -F"|" '{print $2}')
+    usersInLdap=$(smbldap-userlist -u | awk -F"|" '{print $2}' | grep ^[^username])
     # filter exam accounts
     echo -n "[WORKING] Generiere vollstaendige Benutzerliste..."
     for u in $usersInLdap; do
