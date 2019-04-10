@@ -55,7 +55,7 @@ E0DF0C9678DF3BA9B4FD7C04CA4B9940:11
 
 Das Skript prüft, ob ein Passworthash aus dem Schulnetz in dieser Datenbank auftaucht. Das Ergebnis muss interpretiert und erklärt werden.
 
-## Interpretataion
+## Interpretation
 
 Wenn ein Passworthash in der Datenbank von Troy Hunt gefunden wird, kann das zwei Ursachen haben: 
 
