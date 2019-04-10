@@ -1,0 +1,134 @@
+#!/bin/bash
+
+# Checks a NTLM from linuxmuster.net 6.2 against
+# Troy Hunts https://haveibeenpwned.com/ DB
+# 
+# Inspired by T. Heine 
+#
+# March 2019
+#
+# Frank Schiebel <frank@linuxmuster.net>
+# GPLv3
+
+# The directory the script ist run in
+SCRIPTHOME="/var/pwned"
+mkdir -p $SCRIPTHOME
+cd $SCRIPTHOME || exit 1
+
+# Minimal free space in $SCRIPTHOME (in GB)
+MINFREESPACE_SCRIPTHOME="35"
+
+# Test free space
+FREEINSD=$(df -P . | tail -1 | awk '{print $4}' )
+# convert to GB
+FREEGB=$(( $FREEINSD/1024/1024 ))
+if [ $FREEGB -gt $MINFREESPACE_SCRIPTHOME ]; then 
+    echo "[OK] Freier Speicherplatz in $SCRIPTHOME: $FREEGB GB"
+else 
+    echo "[ERROR]"
+    echo "Freier Speicherplatz in $SCRIPTHOME: $FREEGB GB"
+    echo "Minimalert Platzbedarf ist $MINFREESPACE_SCRIPTHOME GB"
+    echo "Breche ab."
+    exit 1
+fi
+
+# Troy Hunts PW List
+LISTURI="https://downloads.pwnedpasswords.com/passwords/pwned-passwords-ntlm-ordered-by-count-v4.7z"
+# Targetfile after unzipping
+HASHFILE="$SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.txt"
+# Logfile
+PWNEDLOG=$SCRIPTHOME/log-$$
+
+
+function printHelp() {
+    echo "Usage: $0 [-g Gruppe] [-u Benutzer]"
+    echo 
+    echo "$0 -g teachers"
+    echo 
+    echo "Testet alle Passworte der Benutzer in der Gruppe teachers"
+    echo 
+    echo "$0 -u maier"
+    echo 
+    echo "Testet das Passwort von Benutzer maier"
+    exit 0
+}
+
+
+# get arguments
+while getopts 'g:u:h' OPT; do
+  case $OPT in
+    g)  groupkey=$OPTARG;;
+    u)  singleuser=$OPTARG;;
+    h)  printHelp ;;
+    *)  printHelp ;;
+  esac
+done
+
+if [ ! -f $HASHFILE ]; then 
+    echo "Hash file nicht vorhanden. Lade Hash File herunter"
+    wget $LISTURI -O $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
+    cd $SCRIPTHOME
+    7z e $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
+    rm $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
+else
+    echo "[OK] Hash file ist vorhanden."
+    echo ""
+fi
+
+
+function exitWithMessage() {
+    echo $1
+    exit 0
+}
+
+# functions
+# No Argument: All users
+# Else: Usergroup
+function getUserNamesFromGroup() {
+    group=$1
+    if [ x${group} == "x" ]; then
+        exitWithMessage "Wollen Sie wirklich alle Benutzeraccounts testen? (Spoiler: Das geht noch gar nicht ;) )"
+    fi 
+
+    userList=$(smbldap-groupshow $group | grep memberUid | awk -F: '{print $2}' | sed -e "s/,/ /g")
+    numAccounts=$(echo $userList | wc -w)
+    if [ $numAccounts -eq 0 ]; then 
+        exitWithMessage "Die angegebene Gruppe hat keine Benutzer"
+    fi
+
+}
+
+function getHashFromUid() {
+    pwhash=$(smbldap-usershow $1 |grep sambaNTPassword | cut -d: -f2 |tr -d ' ')
+}
+
+function testPasswordForUid () {
+    u=$1
+    echo -n "Working on $u ..."
+    getHashFromUid $u
+    
+    prevalence=$(grep -m 1 $pwhash $HASHFILE | awk -F: '{print $2}')
+    if [ "x$prevalence" != "x" ]; then 
+    
+        fn=$(smbldap-usershow $u | grep displayName | awk -F: '{print $2}' | sed -e "s/^\s*//")
+        echo -n "*** $fn:$u:$prevalence *** "
+        echo "$fn:$u:$prevalence" >> $PWNEDLOG
+    fi
+    echo " done."
+}
+
+if [ x$singleuser != "x" ]; then 
+    userList=$singleuser
+else
+    getUserNamesFromGroup $groupkey
+fi
+
+for user in $userList; do 
+    testPasswordForUid $user
+done
+
+
+exit 0
+
+
+
