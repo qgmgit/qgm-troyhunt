@@ -10,101 +10,114 @@
 # Frank Schiebel <frank@linuxmuster.net>
 # GPLv3
 
+
+# SETTINGS
 # The directory the script ist run in
 SCRIPTHOME="/var/pwned"
-mkdir -p $SCRIPTHOME
-cd $SCRIPTHOME || exit 1
 
 # Minimal free space in $SCRIPTHOME (in GB)
+# The passwordhashes need approx 30GB of Space 
+# during unpacking the 7z file
 MINFREESPACE_SCRIPTHOME="35"
-
-# Test free space
-FREEINSD=$(df -P . | tail -1 | awk '{print $4}' )
-# convert to GB
-FREEGB=$(( $FREEINSD/1024/1024 ))
-if [ $FREEGB -gt $MINFREESPACE_SCRIPTHOME ]; then 
-    echo "[OK] Freier Speicherplatz in $SCRIPTHOME: $FREEGB GB"
-else 
-    echo "[ERROR]"
-    echo "Freier Speicherplatz in $SCRIPTHOME: $FREEGB GB"
-    echo "Minimalert Platzbedarf ist $MINFREESPACE_SCRIPTHOME GB"
-    echo "Breche ab."
-    exit 1
-fi
 
 # Troy Hunts PW List
 LISTURI="https://downloads.pwnedpasswords.com/passwords/pwned-passwords-ntlm-ordered-by-count-v4.7z"
+
 # Targetfile after unzipping
 HASHFILE="$SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.txt"
+
 # Logfile
 PWNEDLOG=$SCRIPTHOME/log-$$
 
+# END SETTINGS
 
-function printHelp() {
-    echo "Usage: $0 [-g Gruppe] [-u Benutzer]"
-    echo 
-    echo "$0 -g teachers"
-    echo 
-    echo "Testet alle Passworte der Benutzer in der Gruppe teachers"
-    echo 
-    echo "$0 -u maier"
-    echo 
-    echo "Testet das Passwort von Benutzer maier"
-    exit 0
+
+
+# Funktionen
+
+function prepareEnvironment() {
+    # Create directory
+    mkdir -p $SCRIPTHOME
+    cd $SCRIPTHOME || exit 1
+    # Test free space
+    FREEINSD=$(df -P . | tail -1 | awk '{print $4}' )
+    # convert to GB
+    FREEGB=$(( $FREEINSD/1024/1024 ))
+    if [ $FREEGB -gt $MINFREESPACE_SCRIPTHOME ]; then 
+        echo "[OK] Freier Speicherplatz in $SCRIPTHOME: $FREEGB GB"
+    else 
+        echo "[ERROR]"
+        echo "Freier Speicherplatz in $SCRIPTHOME: $FREEGB GB"
+        echo "Minimaler Platzbedarf ist $MINFREESPACE_SCRIPTHOME GB"
+        echo "Breche ab."
+        exit 1
+    fi
+
+    SEVENZIP=$(which 7z)
+
+    if [ "x$SEVENZIP" != "x" ]; then 
+        echo "[OK] 7z Programm vorhanden: $SEVENZIP"
+    else    
+        echo "[ERROR]"
+        echo "Kein 7z Programm gefunden."
+        echo "Installieren Sie das Paket p7zip-full"
+        echo "  apt-get install p7zip-full"
+        echo "Breche ab."
+        exit 1
+        echo 
+    fi
 }
 
-
-# get arguments
-while getopts 'g:u:h' OPT; do
-  case $OPT in
-    g)  groupkey=$OPTARG;;
-    u)  singleuser=$OPTARG;;
-    h)  printHelp ;;
-    *)  printHelp ;;
-  esac
-done
-
-if [ ! -f $HASHFILE ]; then 
-    echo "Hash file nicht vorhanden. Lade Hash File herunter"
-    wget $LISTURI -O $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
-    cd $SCRIPTHOME
-    7z e $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
-    rm $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
-else
-    echo "[OK] Hash file ist vorhanden."
-    echo ""
-fi
-
-
+# Ausgang mit Kommentar
 function exitWithMessage() {
     echo $1
     exit 0
 }
 
-# functions
+getAllUsers() {
+    usersInLdap=$(smbldap-userlist -u | awk -F"|" '{print $2}')
+    # filter exam accounts
+    echo -n "[WORKING] Generiere vollstaendige Benutzerliste..."
+    for u in $usersInLdap; do
+        gecos=$(smbldap-usershow $u | grep gecos | awk -F":" '{print $2}'  | sed -e "s/\s//g")
+        if [ "x$gecos" != "xExamAccount" ]; then 
+            userList="$userList $u"
+        fi 
+    done
+    echo " done."
+}
+
+
 # No Argument: All users
 # Else: Usergroup
 function getUserNamesFromGroup() {
     group=$1
-    if [ x${group} == "x" ]; then
-        exitWithMessage "Wollen Sie wirklich alle Benutzeraccounts testen? (Spoiler: Das geht noch gar nicht ;) )"
-    fi 
 
-    userList=$(smbldap-groupshow $group | grep memberUid | awk -F: '{print $2}' | sed -e "s/,/ /g")
+    userInGroup=$(smbldap-groupshow $group | grep memberUid | awk -F: '{print $2}' | sed -e "s/,/ /g")
+    # nur die user mit der primaeren Gruppe bitte!
+    for u in $userInGroup; do
+        primary=$(id -ng $u)
+        if [ $primary == $group ]; then
+            userList="$userList $u"
+        fi
+    done
     numAccounts=$(echo $userList | wc -w)
     if [ $numAccounts -eq 0 ]; then 
         exitWithMessage "Die angegebene Gruppe hat keine Benutzer"
     fi
-
 }
 
+# Hole Password Hash fuer eine UID
 function getHashFromUid() {
     pwhash=$(smbldap-usershow $1 |grep sambaNTPassword | cut -d: -f2 |tr -d ' ')
 }
 
+# Suche Hash im Hash file
 function testPasswordForUid () {
     u=$1
-    echo -n "Working on $u ..."
+    numusers=$2
+    workingnum=$3
+    echo -n "[WORKING $workingnum/$numusers] Benutzer $u ..."
     getHashFromUid $u
     
     prevalence=$(grep -m 1 $pwhash $HASHFILE | awk -F: '{print $2}')
@@ -117,16 +130,77 @@ function testPasswordForUid () {
     echo " done."
 }
 
+# Hole Hash-Datei wenn nicht vorhanden
+function getHashFilIfNotExists() {
+    # Hole Hashdatei
+    if [ ! -f $HASHFILE ]; then 
+        echo "Hash file nicht vorhanden. Lade Hash File herunter"
+        wget $LISTURI -O $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
+        cd $SCRIPTHOME
+        echo "Entpacke 7z-gezippte Hash-Datei..."
+        $SEVENZIP e $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
+        rm $SCRIPTHOME/pwned-passwords-ntlm-ordered-by-count-v4.7z
+    else
+        echo "[OK] Hash file ist vorhanden."
+        echo ""
+    fi
+}
+
+
+# Hilfe
+function printHelp() {
+    echo "Usage: $0 [-g Gruppe | -u Benutzer | -a]"
+    echo 
+    echo "$0 -g teachers"
+    echo 
+    echo "Testet alle Passworte der Benutzer in der Gruppe teachers"
+    echo 
+    echo "$0 -u maier"
+    echo 
+    echo "Testet das Passwort von Benutzer maier"
+    echo 
+    echo "$0 -a"
+    echo 
+    echo "Testet alle Passworthashes - das kann sehr lange dauern..."
+    exit 0
+}
+
+if [ $# -eq 0 ]; then 
+    printHelp
+fi
+
+
+# get arguments
+allaccounts=0
+while getopts 'g:u:ah' OPT; do
+  case $OPT in
+    g)  groupkey=$OPTARG;;
+    u)  singleuser=$OPTARG;;
+    a)  allaccounts=1;;
+    h)  printHelp ;;
+    *)  printHelp ;;
+  esac
+done
+
+
+prepareEnvironment
+getHashFilIfNotExists
+
 if [ x$singleuser != "x" ]; then 
     userList=$singleuser
+elif [ $allaccounts -eq 1 ]; then 
+    getAllUsers
 else
     getUserNamesFromGroup $groupkey
 fi
 
-for user in $userList; do 
-    testPasswordForUid $user
-done
+numusers=$(echo $userList | wc -w)
 
+workinguser=1
+for user in $userList; do 
+    testPasswordForUid $user $numusers $workinguser
+    workinguser=$(( workinguser + 1 ))
+done
 
 exit 0
 
